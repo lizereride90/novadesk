@@ -1,7 +1,6 @@
 [versions]
 agp = "8.5.2"
 kotlin = "1.9.24"
-composeCompiler = "1.5.14"
 composeBom = "2024.06.00"
 coreKtx = "1.13.1"
 lifecycle = "2.8.3"
@@ -16,7 +15,6 @@ junit = "4.13.2"
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
