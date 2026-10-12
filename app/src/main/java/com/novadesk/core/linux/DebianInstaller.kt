@@ -122,16 +122,18 @@ class DebianInstaller(
             require(resp.isSuccessful || resp.code == 206) {
                 "Download failed (HTTP ${resp.code}). Check your connection and retry."
             }
+            val body = resp.body
+            require(body != null) { "Empty response body — check your connection and retry." }
             val total = resp.header("Content-Range")
                 ?.substringAfter("/")
                 ?.toLongOrNull()
-                ?: resp.body.contentLength().let { if (it < 0) -1 else it + already }
+                ?: body.contentLength().let { if (it < 0) -1 else it + already }
             val append = resp.code == 206
             dest.sink(append).buffer().use { sink ->
                 val buf = ByteArray(64 * 1024)
                 var read: Int
                 var done = if (append) already else 0L
-                val stream = resp.body.byteStream()
+                val stream = body.byteStream()
                 while (stream.read(buf).also { read = it } != -1) {
                     sink.write(buf, 0, read)
                     done += read
