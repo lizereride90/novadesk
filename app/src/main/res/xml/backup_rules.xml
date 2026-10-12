@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Debian rootfs is too large for Auto Backup; projects DB and prefs are backed up. -->
+    <exclude domain="file" path="debian/" />
+    <exclude domain="file" path="downloads/" />
+</full-backup-content>
