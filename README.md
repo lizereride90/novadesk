@@ -16,27 +16,57 @@ debug APK is attached to every `android.yml` run.
    `novadesk-debug` artifact (or install the APK attached to releases).
 2. Allow install-unknown-apps for your browser, install, open NovaDesk.
 
-## Set up Debian (in the app)
+## First run (automatic)
 
-1. Home → **Debian** card (or Terminal → **Set up**) opens the wizard.
-2. Pick a release (bookworm recommended).
-3. Paste a rootfs tarball URL + SHA-256. Reliable sources for ARM64:
-   - Community rootfs builds published for proot apps (check the checksum
-     published next to the file), or
-   - Your own `debootstrap --foreign` export packed as `.tar.xz`.
-4. Install → wait for **Ready** → open the Terminal tab (`user@novadesk:~$`).
+Setup is now a single full-screen flow — you do not paste URLs:
 
-Needs ~1.2 GB free. Without root there is no systemd/Docker/FUSE — apt,
+1. **Install Debian.** NovaDesk fetches a static proot and a Debian rootfs
+   from built-in, pinned sources (Termux `proot-distro` v4.17.3 rootfs +
+   a `ahmed-alnassif/proot` static build) and shows real download progress.
+2. **All-files access.** Android asks for the `MANAGE_EXTERNAL_STORAGE`
+   permission so device storage can be bound into Debian at `/sdcard`.
+3. **Dev stack.** Inside Debian it installs git, curl, Node.js, npm, Python
+   and pip with apt, then installs the OpenCode and Codex CLIs. apt output
+   streams into the screen so you can see exactly what happened.
+4. **Home.** You land in the app once the tools are in place.
+
+Needs ~1.4 GB free. Without root there is no systemd/Docker/FUSE — apt,
 git, python, node and friends work normally.
 
-## Set up the agents
+Advanced: the manual wizard (Home → Debian card, Terminal → Set up, or
+Settings → Debian) still accepts your own rootfs URL + SHA-256 if you want
+a different release or a self-built tarball.
 
-- **OpenCode:** in Debian, `curl -fsSL https://opencode.ai/install | bash`,
-  then export a provider key (e.g. `ANTHROPIC_API_KEY`). Docs: https://opencode.ai/docs
-- **Codex:** in Debian, `npm i -g @openai/codex`, then run `codex` once to
-  sign in. Docs: https://developers.openai.com/codex/cli
+## The agents
+
+Both agents run their real CLIs inside Debian with their own config files:
+
+- **OpenCode** — `opencode run [--model <m>] "<prompt>"`; config at
+  `~/.config/opencode/opencode.json`.
+- **Codex** — `codex exec [-m <model>] "<prompt>"`; config at
+  `~/.codex/config.toml`.
+
+Set a model per agent in **Settings → Agents**; NovaDesk writes it into the
+matching config file and passes it on the command line. Provider keys are
+handled by each CLI's own auth (`opencode` provider env, `codex` sign-in).
 
 Each agent has its own chat tab, working-directory picker and session log.
+
+## MCP + browser control
+
+On first run NovaDesk writes an MCP config that includes:
+
+- a local **browser bridge** MCP server (`~/.novadesk/browser-mcp.mjs`), and
+- the two remote endpoints supplied at build time
+  (`https://opencode.ai`, `https://codex.com`). These are preinstalled and
+  enabled, but their MCP support is **unverified** — treat them as
+  configured, not guaranteed.
+
+The bridge lets an agent open, read, click, fill and scroll the in-app
+browser while you watch. It is a localhost-only, token-authenticated server,
+and it can only reach the tab you currently have open — if the Browser tab
+is closed, an agent call returns a clear "no page to control" error rather
+than silently doing nothing.
 
 ## Build it yourself
 

@@ -132,6 +132,8 @@ fun DebianSetupScreen(container: AppContainer, nav: NavController) {
             NovaCard {
                 Text("Status", style = MaterialTheme.typography.titleMedium)
                 when (progress.status) {
+                    DebianStatus.FetchingRuntime ->
+                        Text(progress.message.ifBlank { "Fetching the Linux runtime (proot)…" })
                     DebianStatus.Downloading -> {
                         if (progress.totalBytes > 0) {
                             LinearProgressIndicator(
