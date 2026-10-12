@@ -153,20 +153,52 @@ class DebianInstaller(
         }
     }
 
+    /**
+     * Extracts the tarball into [dest]. proot-distro archives wrap the whole
+     * tree in a single top-level directory, so we extract to a staging dir
+     * first and move the contents up — otherwise the tree lands one level too
+     * deep and no shell is ever found.
+     */
     private fun extractTarball(tarball: File, dest: File) {
-        dest.mkdirs()
+        val staging = File(dest.parentFile, dest.name + ".staging").apply {
+            deleteRecursively()
+            mkdirs()
+        }
         // `tar -xJ` needs xz support; Android's toybox tar has had it since 6.
         val result = try {
-            val proc = ProcessBuilder("tar", "-xJpf", tarball.absolutePath, "-C", dest.absolutePath)
+            val proc = ProcessBuilder("tar", "-xJpf", tarball.absolutePath, "-C", staging.absolutePath)
                 .redirectErrorStream(true).start()
             val out = proc.inputStream.bufferedReader().readText()
             proc.waitFor() to out
         } catch (e: Exception) {
             -1 to (e.message ?: "")
         }
-        require(result.first == 0) {
+        // toybox tar cannot mknod device nodes (`dev/console`) without root;
+        // it warns and continues, so accept a non-zero exit when the shell
+        // tree is nevertheless present. The hard gate below is the tree.
+        require(result.first == 0 ||
+            File(staging, "bin/bash").exists() ||
+            File(staging, "usr/bin/bash").exists()) {
             "Extraction failed: ${result.second.take(300).ifBlank { "unable to run tar -xJ" }}"
         }
+
+        // Unwrap a single top-level directory if the archive has one.
+        val children = staging.listFiles().orEmpty()
+        val source = if (children.size == 1 && children[0].isDirectory) children[0] else staging
+        dest.mkdirs()
+        source.listFiles().orEmpty().forEach { f ->
+            val target = File(dest, f.name)
+            if (!f.renameTo(target)) {
+                // Cross-device move isn't possible here, so copy as a fallback.
+                f.copyRecursively(target)
+                f.deleteRecursively()
+            }
+        }
+        staging.deleteRecursively()
+
+        require(
+            File(dest, "bin/bash").exists() || File(dest, "usr/bin/bash").exists(),
+        ) { "The archive did not produce a shell — unexpected tarball layout." }
     }
 
     private fun writeBaseConfig(release: DebianRelease) {

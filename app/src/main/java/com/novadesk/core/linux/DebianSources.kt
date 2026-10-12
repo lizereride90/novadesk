@@ -7,6 +7,7 @@ package com.novadesk.core.linux
  *
  * - rootfs: Termux proot-distro v4.17.3 release assets (the last v4 line
  *   that still publishes distro tarballs; v5 dropped them in favour of OCI).
+ *   Assets are named `debian-bookworm-<arch>-pd-v4.17.3.tar.xz`.
  * - proot: static Android proot built from the Termux fork with the NDK.
  *
  * If either host is unreachable we surface the failure and let the user
@@ -38,9 +39,17 @@ object DebianSources {
         DeviceArch.Unsupported -> null
     }
 
+    /**
+     * Built-in rootfs URL. The pinned proot-distro release ships Debian
+     * assets named `debian-<codename>-<arch>-pd-<tag>.tar.xz`, wrapped in a
+     * top-level `debian-<codename>-<arch>/` directory inside the archive.
+     * Only bookworm is published for Debian at this tag, so other releases
+     * return null and the caller must supply a custom URL.
+     */
     fun rootfsUrl(release: DebianRelease, arch: DeviceArch): String? {
+        if (release != DebianRelease.Bookworm) return null
         val token = distroToken(arch) ?: return null
-        return "$ROOTFS_BASE/${release.codename}-${token}-pd-$PROOT_DISTRO_TAG.tar.xz"
+        return "$ROOTFS_BASE/debian-${release.codename}-${token}-pd-$PROOT_DISTRO_TAG.tar.xz"
     }
 
     fun prootZipUrl(arch: DeviceArch): String? {
