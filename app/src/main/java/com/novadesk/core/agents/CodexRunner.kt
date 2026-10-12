@@ -17,6 +17,7 @@ class CodexRunner(
     terminals: TerminalManager,
     proot: ProotRunner,
     workRoot: File,
+    private val modelProvider: () -> String = { "" },
 ) : AgentRunner(terminals, proot, workRoot) {
 
     override val id = AgentId.Codex
@@ -42,9 +43,15 @@ class CodexRunner(
                 kind = AgentMessage.Kind.ToolCall,
             ),
         )
+        val model = modelProvider()
+        val execCmd = buildString {
+            append("codex exec")
+            if (model.isNotBlank()) append(" -m ").append(shellQuote(model))
+            append(' ').append(shellQuote(prompt))
+        }
         streamProcess(
             argv = proot.argv(
-                listOf("/bin/bash", "-lc", "codex exec ${shellQuote(prompt)}"),
+                listOf("/bin/bash", "-lc", execCmd),
                 workDir = projectPath,
             ),
             emptyHint = "Codex printed nothing.",

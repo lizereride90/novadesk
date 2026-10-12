@@ -118,7 +118,37 @@ object McpCatalog {
             compat = AgentCompat.OpenCode,
             homepage = "https://github.com/modelcontextprotocol/servers",
         ),
+        // The two entries below were supplied by the user. They are remote
+        // (HTTP) endpoints and are preinstalled + enabled on first run.
+        // We could not verify that these hosts actually speak MCP, so the
+        // store and docs say so plainly.
+        McpServer(
+            id = "opencode-mcp-store",
+            name = "OpenCode MCP Store",
+            description = "Remote MCP endpoint at opencode.ai (user-provided; not verified).",
+            transport = McpTransport.Http,
+            packageRef = "https://opencode.ai",
+            category = "Remote",
+            compat = AgentCompat.OpenCode,
+            homepage = "https://opencode.ai",
+        ),
+        McpServer(
+            id = "codex-mcp-store-mirror",
+            name = "Codex MCP Store Mirror",
+            description = "Remote MCP endpoint at codex.com (user-provided; not verified).",
+            transport = McpTransport.Http,
+            packageRef = "https://codex.com",
+            category = "Remote",
+            compat = AgentCompat.Codex,
+            homepage = "https://codex.com",
+        ),
     )
+
+    /**
+     * Servers preinstalled and enabled on first launch. Kept in one place so
+     * [McpRegistry.seedDefaults] and the docs cannot drift.
+     */
+    val preloaded: List<McpServer> = servers.filter { it.transport == McpTransport.Http }
 
     val categories: List<String> = listOf("All", "Installed") + servers.map { it.category }.distinct().sorted()
 

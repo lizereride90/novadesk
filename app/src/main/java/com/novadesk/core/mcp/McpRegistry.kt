@@ -38,6 +38,25 @@ class McpRegistry(private val dir: File) {
 
     suspend fun install(serverId: String) = mutate(serverId, McpInstall(serverId))
 
+    /**
+     * Installs [servers] (enabled) only when they are not already present, so
+     * a user who uninstalled one does not get it silently forced back.
+     */
+    suspend fun seedDefaults(servers: List<McpServer>) = withContext(Dispatchers.IO) {
+        val next = _installed.value.toMutableMap()
+        var changed = false
+        servers.forEach { s ->
+            if (s.id !in next) {
+                next[s.id] = McpInstall(s.id, enabled = true)
+                changed = true
+            }
+        }
+        if (changed) {
+            persist(next)
+            _installed.value = next
+        }
+    }
+
     suspend fun uninstall(serverId: String) = withContext(Dispatchers.IO) {
         val next = _installed.value - serverId
         persist(next)

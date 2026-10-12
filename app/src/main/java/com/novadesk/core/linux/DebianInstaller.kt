@@ -1,9 +1,6 @@
 package com.novadesk.core.linux
 
-import android.content.Context
 import android.system.Os
-import com.novadesk.core.terminal.ShellCommand
-import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,11 +9,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.buffer
 import okio.sink
+import java.io.File
 import java.security.MessageDigest
 
 /** Machine-readable install state, persisted so restarts resume cleanly. */
 enum class DebianStatus {
     NotInstalled,
+    FetchingRuntime,
     Downloading,
     Verifying,
     Extracting,
@@ -25,71 +24,76 @@ enum class DebianStatus {
     Failed,
 }
 
-/** Progress events surfaced to the setup wizard. */
+/** Progress events surfaced to the setup UI. */
 data class InstallProgress(
     val status: DebianStatus = DebianStatus.NotInstalled,
+    val fraction: Float = 0f,
     val downloadedBytes: Long = 0,
     val totalBytes: Long = -1,
     val message: String = "",
 )
 
 /**
- * Downloads, verifies and extracts the Debian rootfs, then writes the
- * initial config (sources.list, user, hostname, resolv.conf).
+ * Downloads (with resume), verifies and extracts the Debian rootfs, then
+ * writes the base guest config. proot is fetched first because nothing in
+ * the guest runs without it.
  *
- * Honest-failure rule: any exception lands the state in [DebianStatus.Failed]
- * with the real message — we never report success we did not earn.
+ * Honest-failure rule: any exception lands in [DebianStatus.Failed] with the
+ * real message. We never report success we did not earn.
  */
 class DebianInstaller(
-    private val context: Context,
     private val layout: DebianLayout,
+    private val prootInstaller: ProotInstaller,
     private val http: OkHttpClient,
 ) {
     private val _progress = MutableStateFlow(InstallProgress())
     val progress: StateFlow<InstallProgress> = _progress
 
     fun currentStatus(): DebianStatus =
-        if (layout.looksInstalled) DebianStatus.Ready else _progress.value.status
+        if (layout.looksInstalled && layout.prootReady) DebianStatus.Ready else _progress.value.status
 
-    /**
-     * Full install. Downloads the rootfs tarball for [release] with resume
-     * support, verifies sha256 when [expectedSha256] is known, extracts via
-     * the system tar, and writes default config.
-     */
     suspend fun install(
         release: DebianRelease = DebianRelease.default,
         expectedSha256: String? = null,
-        tarballUrl: String,
+        tarballUrl: String? = null,
     ) = withContext(Dispatchers.IO) {
         layout.ensureDirs()
         try {
             val arch = DeviceArch.detect()
             require(arch != DeviceArch.Unsupported) {
-                "Unsupported CPU architecture (${android.os.Build.SUPPORTED_ABIS.firstOrNull()}). " +
-                    "NovaDesk currently supports ARM64, ARMv7 and x86_64."
+                "Unsupported CPU (${android.os.Build.SUPPORTED_ABIS.firstOrNull()}). " +
+                    "NovaDesk supports ARM64, ARMv7 and x86_64."
             }
-            requireFreeSpace(minBytes = 1_200_000_000L)
+            requireFreeSpace(minBytes = 1_400_000_000L)
+
+            if (!layout.prootReady) {
+                _progress.value = InstallProgress(DebianStatus.FetchingRuntime, message = "Fetching the Linux runtime (proot)…")
+                prootInstaller.ensureInstalled(arch)
+                _progress.value = InstallProgress(DebianStatus.FetchingRuntime, fraction = 1f, message = "Runtime ready.")
+            }
+
+            val url = tarballUrl?.takeIf { it.isNotBlank() } ?: DebianSources.rootfsUrl(release, arch)
+            require(!url.isNullOrBlank()) { "No built-in rootfs for ${release.codename} on ${arch.label}." }
 
             _progress.value = InstallProgress(DebianStatus.Downloading, message = "Downloading Debian ${release.codename}…")
-            val tarball = File(layout.downloadsDir, "debian-${release.codename}.tar.xz")
-            downloadResumable(tarballUrl, tarball)
+            val tarball = File(layout.downloadsDir, "debian-${release.codename}-${arch.label}.tar.xz")
+            downloadResumable(url, tarball)
 
             if (expectedSha256 != null) {
                 _progress.value = InstallProgress(DebianStatus.Verifying, message = "Verifying checksum…")
                 val actual = sha256(tarball)
                 require(actual.equals(expectedSha256, ignoreCase = true)) {
-                    "Checksum mismatch: expected $expectedSha256 but got $actual. " +
-                        "The download may be corrupt — please retry."
+                    "Checksum mismatch: expected $expectedSha256 but got $actual. Retry the download."
                 }
             }
 
-            _progress.value = InstallProgress(DebianStatus.Extracting, message = "Extracting root filesystem…")
+            _progress.value = InstallProgress(DebianStatus.Extracting, message = "Extracting root filesystem (this can take a minute)…")
             extractTarball(tarball, layout.rootfsDir)
 
             _progress.value = InstallProgress(DebianStatus.Configuring, message = "Configuring Debian…")
             writeBaseConfig(release)
 
-            _progress.value = InstallProgress(DebianStatus.Ready, message = "Debian ${release.codename} is ready.")
+            _progress.value = InstallProgress(DebianStatus.Ready, fraction = 1f, message = "Debian ${release.codename} is ready.")
         } catch (e: Exception) {
             _progress.value = InstallProgress(DebianStatus.Failed, message = e.message ?: "Install failed.")
             throw e
@@ -106,9 +110,9 @@ class DebianInstaller(
     // -- internals ---------------------------------------------------------
 
     private fun requireFreeSpace(minBytes: Long) {
-        val free = layout.rootDir.freeSpace.coerceAtLeast(context.filesDir.freeSpace)
+        val free = layout.rootDir.freeSpace.coerceAtLeast(0L)
         require(free > minBytes) {
-            "Not enough storage: need ~1.2 GB free, found ${free / 1_000_000} MB."
+            "Not enough storage: need ~1.4 GB free, found ${free / 1_000_000} MB."
         }
     }
 
@@ -122,15 +126,14 @@ class DebianInstaller(
             require(resp.isSuccessful || resp.code == 206) {
                 "Download failed (HTTP ${resp.code}). Check your connection and retry."
             }
-            val body = resp.body
-            require(body != null) { "Empty response body — check your connection and retry." }
+            val body = resp.body ?: error("Empty response body — check your connection and retry.")
             val total = resp.header("Content-Range")
                 ?.substringAfter("/")
                 ?.toLongOrNull()
                 ?: body.contentLength().let { if (it < 0) -1 else it + already }
             val append = resp.code == 206
             dest.sink(append).buffer().use { sink ->
-                val buf = ByteArray(64 * 1024)
+                val buf = ByteArray(128 * 1024)
                 var read: Int
                 var done = if (append) already else 0L
                 val stream = body.byteStream()
@@ -139,10 +142,11 @@ class DebianInstaller(
                     done += read
                     _progress.value = InstallProgress(
                         DebianStatus.Downloading,
+                        fraction = if (total > 0) done.toFloat() / total else 0f,
                         downloadedBytes = done,
                         totalBytes = total,
-                        message = "Downloading… ${done / 1_048_576} MB" +
-                            if (total > 0) " of ${total / 1_048_576} MB" else "",
+                        message = "Downloading Debian… ${done / 1_048_576} MB" +
+                            if (total > 0) " / ${total / 1_048_576} MB" else "",
                     )
                 }
             }
@@ -150,10 +154,18 @@ class DebianInstaller(
     }
 
     private fun extractTarball(tarball: File, dest: File) {
-        // The device tar understands xz since Android 6; fall back loudly.
-        val result = ShellCommand.run("tar", "-xJpf", tarball.absolutePath, "-C", dest.absolutePath)
-        require(result.exitCode == 0) {
-            "Extraction failed: ${result.stderr.ifBlank { result.stdout }.take(300)}"
+        dest.mkdirs()
+        // `tar -xJ` needs xz support; Android's toybox tar has had it since 6.
+        val result = try {
+            val proc = ProcessBuilder("tar", "-xJpf", tarball.absolutePath, "-C", dest.absolutePath)
+                .redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            proc.waitFor() to out
+        } catch (e: Exception) {
+            -1 to (e.message ?: "")
+        }
+        require(result.first == 0) {
+            "Extraction failed: ${result.second.take(300).ifBlank { "unable to run tar -xJ" }}"
         }
     }
 
@@ -161,14 +173,19 @@ class DebianInstaller(
         val etc = File(layout.rootfsDir, "etc").apply { mkdirs() }
         File(etc, "hostname").writeText("novadesk\n")
         File(etc, "resolv.conf").writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
-        File(etc, "os-release-extra").writeText("NOVADESK_RUNTIME=proot\n")
-        val aptDir = File(etc, "apt/sources.list.d").apply { mkdirs() }
-        File(File(etc, "apt"), "sources.list").writeText(
-            "deb ${DebianSources.MIRROR} ${release.codename} main contrib non-free non-free-firmware\n" +
-                "deb ${DebianSources.MIRROR}-security ${release.codename}-security main contrib non-free non-free-firmware\n" +
-                "deb ${DebianSources.MIRROR} ${release.codename}-updates main contrib non-free non-free-firmware\n",
+        File(etc, "apt/sources.list").apply { parentFile?.mkdirs() }.writeText(
+            "deb http://deb.debian.org/debian ${release.codename} main contrib non-free non-free-firmware\n" +
+                "deb http://deb.debian.org/debian ${release.codename}-updates main contrib non-free non-free-firmware\n" +
+                "deb http://security.debian.org/debian-security ${release.codename}-security main contrib non-free non-free-firmware\n",
         )
-        aptDir.mkdirs()
+        // Nice shell identity without needing a real login session.
+        File(etc, "profile.d").apply { mkdirs() }
+        File(File(etc, "profile.d"), "novadesk.sh").writeText(
+            "export PS1='user@novadesk:\\w\\$ '\n" +
+                "export EDITOR=nano\n",
+        )
+        File(File(etc, "profile.d"), "novadesk.sh").setReadable(true, false)
+
         try {
             Os.chmod(layout.homeDir.absolutePath, 493) // 0755
         } catch (_: Exception) {
@@ -178,7 +195,7 @@ class DebianInstaller(
     private fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
+            val buf = ByteArray(128 * 1024)
             var read: Int
             while (input.read(buf).also { read = it } != -1) digest.update(buf, 0, read)
         }

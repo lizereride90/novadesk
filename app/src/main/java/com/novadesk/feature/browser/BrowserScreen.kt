@@ -26,6 +26,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -42,7 +43,10 @@ import com.novadesk.core.browser.BrowserTab
 import com.novadesk.core.browser.SearchProvider
 import com.novadesk.core.storage.AppContainer
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * Built-in browser: WebView tabs, bookmarks, history, find-in-page and
@@ -176,12 +180,25 @@ fun BrowserScreen(container: AppContainer, nav: NavController) {
                 } else {
                     null
                 }
-                if (findQuery.isNotBlank()) web.findAllAsync(findQuery)
-                // Agent handoff: when enabled in prefs, agents may call
-                // BrowserTools against this WebView (see ARCHITECTURE.md).
             },
             modifier = Modifier.weight(1f),
         )
+
+        // Let agents drive *this* tab over the localhost bridge, but only
+        // while the tab is open and the user has left the toggle on. When
+        // the tab goes away the handler is cleared, so a stray agent call
+        // gets an honest "no page" error instead of acting on nothing.
+        DisposableEffect(webRef, prefs?.agentBrowserControl) {
+            val web = webRef
+            if (web != null && (prefs?.agentBrowserControl ?: true)) {
+                container.browserBridge.setHandler { tool, args ->
+                    handleBrowserTool(container, web, active, tool, args)
+                }
+            } else {
+                container.browserBridge.setHandler(null)
+            }
+            onDispose { container.browserBridge.setHandler(null) }
+        }
 
         LazyRow(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
             item {
@@ -222,5 +239,57 @@ fun BrowserScreen(container: AppContainer, nav: NavController) {
             placeholder = { Text("Find in page…") },
             singleLine = true,
         )
+    }
+}
+
+/**
+ * Executes one agent tool against the live WebView. Always runs on the main
+ * thread because WebView will throw otherwise. Returns a short human-readable
+ * result that the agent sees as the tool output.
+ */
+private suspend fun handleBrowserTool(
+    container: AppContainer,
+    web: WebView,
+    active: BrowserTab,
+    tool: String,
+    args: JSONObject,
+): String = withContext(Dispatchers.Main) {
+    active.agentControlled = true
+    try {
+        when (tool) {
+            "browser_open" -> {
+                val url = args.optString("url")
+                if (url.isBlank()) "No url given." else {
+                    web.loadUrl(url)
+                    "Opened $url"
+                }
+            }
+            "browser_back" -> {
+                web.goBack()
+                "Went back."
+            }
+            "browser_url" -> "${web.url} | ${web.title}"
+            "browser_snapshot" -> {
+                val snap = container.browserTools.snapshot(web)
+                buildString {
+                    appendLine(snap.title)
+                    appendLine(snap.url)
+                    appendLine()
+                    appendLine(snap.text.take(6_000))
+                    if (snap.links.isNotEmpty()) {
+                        appendLine()
+                        appendLine("Links:")
+                        snap.links.take(40).forEach { appendLine("- ${it.text} -> ${it.href}") }
+                    }
+                }
+            }
+            "browser_click" -> container.browserTools.click(web, args.optString("selector"))
+            "browser_fill" ->
+                container.browserTools.fillInput(web, args.optString("selector"), args.optString("value"))
+            "browser_scroll" -> container.browserTools.scrollBy(web, args.optInt("dy", 500))
+            else -> "Unknown browser tool: $tool"
+        }
+    } finally {
+        active.agentControlled = false
     }
 }

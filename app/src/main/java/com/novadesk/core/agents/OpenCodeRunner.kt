@@ -19,6 +19,7 @@ class OpenCodeRunner(
     terminals: TerminalManager,
     proot: ProotRunner,
     workRoot: File,
+    private val modelProvider: () -> String = { "" },
 ) : AgentRunner(terminals, proot, workRoot) {
 
     override val id = AgentId.OpenCode
@@ -45,9 +46,15 @@ class OpenCodeRunner(
                 kind = AgentMessage.Kind.ToolCall,
             ),
         )
+        val model = modelProvider()
+        val runCmd = buildString {
+            append("opencode run")
+            if (model.isNotBlank()) append(" --model ").append(shellQuote(model))
+            append(' ').append(shellQuote(prompt))
+        }
         streamProcess(
             argv = proot.argv(
-                listOf("/bin/bash", "-lc", "opencode run ${shellQuote(prompt)}"),
+                listOf("/bin/bash", "-lc", runCmd),
                 workDir = projectPath,
             ),
             emptyHint = "OpenCode printed nothing.",

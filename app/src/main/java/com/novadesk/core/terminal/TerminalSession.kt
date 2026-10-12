@@ -37,8 +37,16 @@ class TerminalSession(
     private val _output = MutableStateFlow("")
     val output: StateFlow<String> = _output
 
+    /** Bumped on every flush so the UI only re-renders when there is news. */
+    private val _revision = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = _revision
+
     private val _running = MutableStateFlow(true)
     val running: StateFlow<Boolean> = _running
+
+    /** Copy of the last [lines] buffered lines, oldest first. */
+    fun snapshot(lines: Int = 1_000): List<String> =
+        synchronized(this) { buffer.takeLast(lines) }
 
     init {
         val builder = ProcessBuilder(argv)
@@ -89,7 +97,10 @@ class TerminalSession(
             buffer.addLast(line)
             while (buffer.size > cap) buffer.removeFirst()
         }
-        _output.value = buffer.joinToString("\n")
+        // Only keep a bounded tail joined — this runs on every read chunk and
+        // an unbounded join was the main source of UI jank.
+        _output.value = buffer.takeLast(OUTPUT_TAIL_LINES).joinToString("\n")
+        _revision.value = _revision.value + 1
     }
 
     /** Bytes typed by the user, e.g. `"ls\n"` or `"\u0003"` (Ctrl-C). */
@@ -112,6 +123,7 @@ class TerminalSession(
             buffer.clear()
             buffer.addLast("")
             _output.value = ""
+            _revision.value = _revision.value + 1
         }
     }
 
@@ -124,5 +136,9 @@ class TerminalSession(
             proc.destroy()
             scope.cancel()
         }
+    }
+
+    private companion object {
+        const val OUTPUT_TAIL_LINES = 1_200
     }
 }

@@ -112,7 +112,14 @@ abstract class AgentRunner(
     // -- shared helpers ----------------------------------------------------
 
     protected fun append(msg: AgentMessage) {
-        _messages.value = _messages.value + msg
+        val current = _messages.value
+        // Keep the transcript bounded — long runs would otherwise grow the
+        // list (and every recomposition) without limit.
+        _messages.value = if (current.size >= MAX_MESSAGES) {
+            current.takeLast(MAX_MESSAGES - 1) + msg
+        } else {
+            current + msg
+        }
         try {
             sessionLog?.appendText("[${msg.role}] ${msg.text}\n")
         } catch (_: Exception) {
@@ -192,4 +199,8 @@ abstract class AgentRunner(
         kotlinx.coroutines.withContext(Dispatchers.IO) { block() }
 
     class AgentNotReadyException(message: String) : Exception(message)
+
+    private companion object {
+        const val MAX_MESSAGES = 400
+    }
 }

@@ -1,5 +1,10 @@
 package com.novadesk.feature.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.novadesk.core.browser.SearchProvider
@@ -55,6 +61,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(container: AppContainer, nav: NavController) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val prefs by container.prefs.flow.collectAsState(initial = NovaPrefs())
     var query by remember { mutableStateOf("") }
     var showReset by remember { mutableStateOf(false) }
@@ -117,6 +124,42 @@ fun SettingsScreen(container: AppContainer, nav: NavController) {
                     )
                 }
                 item {
+                    val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+                        Environment.isExternalStorageManager()
+                    ListItem(
+                        headlineContent = { Text("All-files access") },
+                        supportingContent = {
+                            Text(
+                                if (granted) "Granted — /sdcard is mounted inside Debian."
+                                else "Not granted — /sdcard won't be available inside Debian.",
+                            )
+                        },
+                        trailingContent = {
+                            if (!granted) {
+                                OutlinedButton(onClick = {
+                                    val ctx = context
+                                    runCatching {
+                                        ctx.startActivity(
+                                            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                                                .setData(Uri.parse("package:${ctx.packageName}"))
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    }.onFailure {
+                                        runCatching {
+                                            ctx.startActivity(
+                                                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                            )
+                                        }
+                                    }
+                                }) { Text("Grant") }
+                            } else {
+                                Text("On", color = MaterialTheme.colorScheme.secondary)
+                            }
+                        },
+                    )
+                }
+                item {
                     ListItem(
                         headlineContent = { Text("Update packages") },
                         supportingContent = { Text("Runs apt update && apt upgrade inside Debian.") },
@@ -152,12 +195,40 @@ fun SettingsScreen(container: AppContainer, nav: NavController) {
                 item {
                     Text(
                         "Model and provider keys live in each agent's own config inside Debian " +
-                            "(opencode.json / codex auth). NovaDesk opens those files for editing " +
-                            "rather than keeping a second copy that could drift.",
+                            "(opencode.json / codex config). Set a model here and NovaDesk writes " +
+                            "it into those files so `opencode` and `codex` pick it up.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                     )
+                }
+                item {
+                    ModelRow(
+                        title = "OpenCode model",
+                        initial = base.openCodeModel,
+                        hint = "provider/model, e.g. anthropic/claude-sonnet-4",
+                    ) { value ->
+                        scope.launch {
+                            val cur = container.prefs.current()
+                            container.prefs.update(cur.copy(openCodeModel = value))
+                            container.setup.writeAgentConfig()
+                            actionMsg = "OpenCode model saved and written to opencode.json."
+                        }
+                    }
+                }
+                item {
+                    ModelRow(
+                        title = "Codex model",
+                        initial = base.codexModel,
+                        hint = "e.g. gpt-5-codex",
+                    ) { value ->
+                        scope.launch {
+                            val cur = container.prefs.current()
+                            container.prefs.update(cur.copy(codexModel = value))
+                            container.setup.writeAgentConfig()
+                            actionMsg = "Codex model saved and written to config.toml."
+                        }
+                    }
                 }
                 item {
                     SwitchRow("Let agents drive browser tabs", "An indicator always shows while they do.", base.agentBrowserControl) {
@@ -237,6 +308,28 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChang
         trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
         modifier = Modifier.clickable { onChange(!checked) },
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelRow(title: String, initial: String, hint: String, onApply: (String) -> Unit) {
+    var value by remember(initial) { mutableStateOf(initial) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { value = it },
+            label = { Text(title) },
+            placeholder = { Text(hint) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            TextButton(onClick = { onApply(value.trim()) }) { Text("Apply") }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

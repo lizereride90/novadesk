@@ -1,47 +1,59 @@
 package com.novadesk.core.linux
 
 /**
- * Rootfs download descriptors. We use the official Debian cloud-style
- * tarballs plus the well-known community rootfs builds as fallback —
- * checksums are verified before extraction, never skipped.
+ * Built-in, verified download sources. Every URL here resolves today and is
+ * pinned to an immutable release tag, so setup never depends on a moving
+ * "latest" pointer.
  *
- * The exact per-release URLs are resolved at install time
- * ([DebianInstaller]) so a stale mirror never bricks the wizard.
+ * - rootfs: Termux proot-distro v4.17.3 release assets (the last v4 line
+ *   that still publishes distro tarballs; v5 dropped them in favour of OCI).
+ * - proot: static Android proot built from the Termux fork with the NDK.
+ *
+ * If either host is unreachable we surface the failure and let the user
+ * paste their own URL in Settings — we never silently fall through to a
+ * different, unverified artifact.
  */
 object DebianSources {
 
-    /** Debian base tarball mirror root. */
-    const val MIRROR = "https://ftp.debian.org/debian"
+    const val PROOT_DISTRO_TAG = "v4.17.3"
+    const val PROOT_BUILD_TAG = "v26.10.08-a179d3e"
 
-    /**
-     * Returns theOrdered list of candidate tarball URLs for this
-     * release + architecture. First success wins.
-     */
-    fun candidates(release: DebianRelease, arch: DeviceArch): List<String> {
-        val debianArch = when (arch) {
-            DeviceArch.Arm64 -> "arm64"
-            DeviceArch.Arm32 -> "armhf"
-            DeviceArch.X86_64 -> "amd64"
-            DeviceArch.Unsupported -> return emptyList()
-        }
-        // Primary: official Debian bookworm/trixie base tarballs are fetched
-        // through debootstrap-style bootstrap on device (see DebianInstaller).
-        // Fallback: static rootfs archives kept for offline/retry flows.
-        return listOf(
-            "$MIRROR/dists/${release.codename}/main/installer-$debianArch/current/images/netboot/debian-installer/$debianArch/linux",
-        )
+    private const val GH = "https://github.com"
+    private const val ROOTFS_BASE = "$GH/termux/proot-distro/releases/download/$PROOT_DISTRO_TAG"
+    private const val PROOT_BASE = "$GH/ahmed-alnassif/proot/releases/download/$PROOT_BUILD_TAG"
+
+    /** proot-distro arch token for a device ABI. */
+    private fun distroToken(arch: DeviceArch): String? = when (arch) {
+        DeviceArch.Arm64 -> "aarch64"
+        DeviceArch.Arm32 -> "arm"
+        DeviceArch.X86_64 -> "x86_64"
+        DeviceArch.Unsupported -> null
     }
 
-    /** Packages every fresh install gets, on top of the base system. */
-    val basePackages: List<String> = listOf(
-        "bash", "coreutils", "apt", "dpkg", "git", "curl", "ca-certificates",
-        "python3", "python3-pip", "openssh-client", "nano", "less",
-    )
+    /** proot release asset token for a device ABI. */
+    private fun prootToken(arch: DeviceArch): String? = when (arch) {
+        DeviceArch.Arm64 -> "aarch64"
+        DeviceArch.Arm32 -> "arm"
+        DeviceArch.X86_64 -> "x86_64"
+        DeviceArch.Unsupported -> null
+    }
 
-    /** Optional dev-stack bundles offered on the setup screen. */
-    val optionalBundles: Map<String, List<String>> = mapOf(
-        "Node.js" to listOf("nodejs", "npm"),
-        "Python dev" to listOf("python3-venv", "python3-dev", "build-essential"),
-        "Shell extras" to listOf("zsh", "tmux", "htop", "jq", "ripgrep"),
+    fun rootfsUrl(release: DebianRelease, arch: DeviceArch): String? {
+        val token = distroToken(arch) ?: return null
+        return "$ROOTFS_BASE/${release.codename}-${token}-pd-$PROOT_DISTRO_TAG.tar.xz"
+    }
+
+    fun prootZipUrl(arch: DeviceArch): String? {
+        val token = prootToken(arch) ?: return null
+        return "$PROOT_BASE/proot-$token.zip"
+    }
+
+    val prootChecksumsUrl: String = "$PROOT_BASE/checksums.txt"
+
+    /** Packages the dev-stack step installs through apt. */
+    val devPackages: List<String> = listOf(
+        "bash", "coreutils", "apt", "dpkg", "ca-certificates", "locales",
+        "git", "curl", "wget", "unzip", "xz-utils", "sudo",
+        "nodejs", "npm", "python3", "python3-pip", "python3-venv",
     )
 }

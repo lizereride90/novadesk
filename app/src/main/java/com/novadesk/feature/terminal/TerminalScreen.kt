@@ -135,9 +135,15 @@ private fun DebianNudge(onSetup: () -> Unit) {
 
 @Composable
 private fun SessionView(session: TerminalSession, modifier: Modifier = Modifier) {
-    val raw by session.output.collectAsState()
+    val revision by session.revision.collectAsState()
     var input by remember(session.id) { mutableStateOf("") }
-    val rendered = remember(raw) { AnsiParser.render(AnsiParser.strip(raw).takeLast(120_000)) }
+    // Re-parse only when the session actually produced output, and only the
+    // visible tail — parsing the whole scrollback on every chunk was the
+    // single biggest jank source in the terminal.
+    val rendered = remember(revision) {
+        val tail = session.snapshot(600).joinToString("\n")
+        AnsiParser.render(AnsiParser.strip(tail))
+    }
 
     DisposableEffect(session.id) { onDispose { /* session persists; closed via tab X */ } }
 
